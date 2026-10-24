@@ -12,7 +12,9 @@ import { jsPDF } from "jspdf";
 
 const CASE_KEY = "cybermitra-case-v1";
 const UPI_CASES_KEY = "cybermitra-upi-cases-v1";
-const BACKEND_URL = "http://127.0.0.1:8000";
+const BACKEND_URL =
+  (typeof import.meta !== "undefined" && import.meta.env?.VITE_BACKEND_URL) ||
+  "http://127.0.0.1:8000";
 
 const NAV = [
   { id: "overview", name: "Overview", short: "Overview", icon: LayoutDashboard },

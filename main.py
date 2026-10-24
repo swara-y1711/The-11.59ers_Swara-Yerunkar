@@ -11,22 +11,14 @@ from faster_whisper import WhisperModel
 # FFmpeg setup
 # --------------------------------------------------
 
-ffmpeg_path = (
-    Path.home()
-    / "AppData"
-    / "Local"
-    / "Microsoft"
-    / "WinGet"
-    / "Packages"
-    / "Gyan.FFmpeg.Shared_Microsoft.Winget.Source_8wekyb3d8bbwe"
-    / "ffmpeg-9.0.2-full_build-shared"
-    / "bin"
-)
+import shutil
 
-if ffmpeg_path.exists():
-    os.environ["PATH"] = (
-        str(ffmpeg_path) + os.pathsep + os.environ.get("PATH", "")
-    )
+if not shutil.which("ffmpeg"):
+    winget_packages = Path.home() / "AppData" / "Local" / "Microsoft" / "WinGet" / "Packages"
+    if winget_packages.exists():
+        found = list(winget_packages.glob("**/ffmpeg.exe"))
+        if found:
+            os.environ["PATH"] = str(found[0].parent) + os.pathsep + os.environ.get("PATH", "")
 
 # --------------------------------------------------
 # FastAPI setup
@@ -213,7 +205,7 @@ async def transcribe_audio(
                 )
 
                 emotion = {
-                    "status": "success",
+                    "status": "completed",
                     "label": best.get("label"),
                     "confidence": round(
                         float(best.get("score", 0)), 4

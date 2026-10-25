@@ -1,10 +1,6 @@
 # CyberMitra (साइबर मित्र)
 ### AI-Powered Speech Emotion Analysis & Incident Triage for Cybercrime Investigation
 
-> **VecnaVerse National Level Hackathon 2026**  
-> **Problem Statement 02 | Domain:** Cybersecurity  
-> **Title:** Real-Time Speech Emotion Analysis for Cybercrime Investigation
-
 ---
 
 ## 📌 Executive Overview
@@ -161,7 +157,4 @@ Uploads call audio for end-to-end transcription and emotion telemetry.
 2. **Bilingual Equity:** Explicit support for Indian linguistic realities (Hindi, English, Hinglish).
 3. **Data Privacy:** Local and edge-friendly inference architecture to safeguard sensitive call audio and caller PII.
 
----
 
-## 👥 Team VecnaVerse
-*Developed for VecnaVerse National Level Hackathon 2026.*

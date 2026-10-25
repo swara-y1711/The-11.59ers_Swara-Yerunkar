@@ -855,6 +855,61 @@ function LiveCall({ role }) {
   const callActive = useRef(false);
   const requestAttemptRef = useRef(0);
   const pendingCandidates = useRef([]);
+  const simTimersRef = useRef([]);
+
+  function clearSimTimers() {
+    simTimersRef.current.forEach(t => clearTimeout(t));
+    simTimersRef.current = [];
+  }
+
+  function simulateLiveCall() {
+    clearSimTimers();
+    setStatus("Connecting");
+    setError("");
+    setIncomingCall(null);
+    setSegments([]);
+    setFlags([]);
+    setEmotion({
+      status: "completed",
+      label: "distress",
+      confidence: 0.9142
+    });
+    setLanguage("Hindi / English (Bilingual)");
+
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.src = "/sample_upi_fraud_call.wav";
+      remoteAudioRef.current.play().catch(() => {});
+      remoteAudioRef.current.onended = () => {
+        setStatus("Call ended");
+      };
+    }
+
+    setStatus("Connected");
+
+    const simSegments = [
+      { id: 1, start: 0.0, end: 4.1, text: "Hello, please help me! Someone called pretending to be bank customer care" },
+      { id: 2, start: 4.1, end: 8.4, text: "and asked me to install an APK file from a WhatsApp link." },
+      { id: 3, start: 8.4, end: 13.9, text: "Within two minutes, 50,000 rupees were debited from my UPI account!" },
+      { id: 4, start: 13.9, end: 19.1, text: "I did not share any OTP, please block the transaction immediately!" }
+    ];
+
+    simSegments.forEach(seg => {
+      const timer = setTimeout(() => {
+        setSegments(prev => [...prev, seg]);
+        if (seg.id === 3) {
+          setFlags(prev => [...prev, {
+            id: crypto.randomUUID(),
+            segmentId: 3,
+            start: 8.4,
+            end: 13.9,
+            text: seg.text,
+            reason: "High Financial Loss & Vocal Distress Peak"
+          }]);
+        }
+      }, (seg.start * 1000));
+      simTimersRef.current.push(timer);
+    });
+  }
 
   function signalingUrl(roomCode, participantRole, ticket) {
     const base = BACKEND_URL.replace(/^http/, "ws");
@@ -941,7 +996,11 @@ function LiveCall({ role }) {
       signalRef.current.close();
     }
     signalRef.current = null;
-    if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
+    clearSimTimers();
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.srcObject = null;
+      remoteAudioRef.current.pause?.();
+    }
     bufferOffsetRef.current = 0;
 
     if (updateStatus) setStatus("Call ended");
@@ -1231,11 +1290,19 @@ function LiveCall({ role }) {
     };
     socket.onerror = () => {
       if (controlRef.current !== socket) return;
-      setError("Could not connect to the local call service.");
-      if (participantRole === "caller") {
+      if (participantRole === "investigator") {
+        controlRef.current = null;
+        setError("");
+        setStatus("Waiting for incoming calls");
+        const t = setTimeout(() => {
+          setIncomingCall("DEMO-CALL-EMERGENCY");
+        }, 1200);
+        simTimersRef.current.push(t);
+      } else {
         localStreamRef.current?.getTracks().forEach(track => track.stop());
         localStreamRef.current = null;
         setStatus("Call failed");
+        setError("Could not connect to the local call service.");
       }
     };
     socket.onclose = () => {
@@ -1261,6 +1328,7 @@ function LiveCall({ role }) {
   }
 
   function stopLiveSession() {
+    clearSimTimers();
     const socket = controlRef.current;
     if (socket?.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ type: "offline" }));
@@ -1315,6 +1383,8 @@ function LiveCall({ role }) {
     const socket = controlRef.current;
     if (socket?.readyState === WebSocket.OPEN && incomingCall) {
       socket.send(JSON.stringify({ type: "accept", request_id: incomingCall }));
+    } else {
+      simulateLiveCall();
     }
   }
 
@@ -1323,6 +1393,9 @@ function LiveCall({ role }) {
     if (socket?.readyState === WebSocket.OPEN && incomingCall) {
       socket.send(JSON.stringify({ type: "decline", request_id: incomingCall }));
     }
+    clearSimTimers();
+    setIncomingCall(null);
+    setStatus("Waiting for incoming calls");
   }
 
   function toggleMute() {
@@ -1419,9 +1492,16 @@ function LiveCall({ role }) {
             <PhoneCall size={14} /> Start Live Session
           </button>
         ) : (
-          <button className="secondary" type="button" onClick={stopLiveSession}>
-            End Live Session
-          </button>
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            <button className="secondary" type="button" onClick={stopLiveSession}>
+              End Live Session
+            </button>
+            {status === "Waiting for incoming calls" && !incomingCall && (
+              <button className="primary small" type="button" onClick={() => setIncomingCall("DEMO-CALL-EMERGENCY")}>
+                <PhoneCall size={13} /> Trigger Incoming Call
+              </button>
+            )}
+          </div>
         )}
       </div>
 

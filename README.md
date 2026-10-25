@@ -1,65 +1,263 @@
-# CyberMitra
+# CyberMitra 🛡️
+### AI-Assisted Cybercrime Reporting & Investigation Platform
 
-CyberMitra is a React + Vite investigation dashboard with recorded-audio analysis and a simulated live browser call.
+CyberMitra is an AI-assisted cybercrime investigation platform designed to help investigators organize complaints, analyze audio evidence, prioritize cases, and handle cybercrime helpline calls through a unified dashboard.
 
-## Features
+The platform brings together UPI fraud reporting, recorded audio analysis, live caller–investigator communication, speech transcription, voice emotion estimation, and case management to support a more structured investigation workflow.
 
-- Upload, play, and analyze recorded audio through the FastAPI backend.
-- Transcribe with Faster-Whisper and classify voice-emotion estimates from short speech chunks with the existing Wav2Vec2 model.
-- Flag transcript segments for investigator review.
-- Accept incoming two-session WebRTC calls between a caller and an available investigator. The investigator's browser forwards only the received caller audio to FastAPI for analysis.
-- Organize UPI investigation notes, evidence, timelines, and reports locally in the browser.
-- Triage fictional cases in **Case Priority & Intelligence** with explainable priority rules, filters, case detail, and demo-only status, note, and priority-override actions.
+> **Project goal:** Make cybercrime investigation workflows more organized, evidence-driven, and accessible through one integrated platform.
 
-## Run on Windows
+---
 
-1. Install Node.js LTS and Python 3.14 (the checked-in PyTorch CPU wheel supports this version on Windows).
-2. From the project directory, install the frontend dependencies and start Vite:
-   ```powershell
-   npm install
-   npm run dev
-   ```
-3. In another terminal from the project directory, install the backend requirements and start FastAPI:
-   ```powershell
-   python -m pip install -r src\requirements.txt
-   python -m uvicorn main:app --reload --port 8081
-   ```
-4. Open the Vite URL (usually `http://localhost:5173`) in two browser sessions.
+## ✨ Key Features
 
-## Simulated live call
+### 1. UPI Fraud Investigation
+- Capture transaction details, including transaction amount, UPI ID, and incident information.
+- Support structured incident narratives, evidence summaries, and investigation notes.
+- Organize transaction-related information for investigation and case documentation.
+- Help investigators review reported UPI fraud incidents through a unified workflow.
 
-Open the investigator dashboard and select **Start Live Session** in Audio Forensics. The status changes to **Waiting for incoming calls**. In a second browser session open `/caller`, grant microphone access, and select **Call Helpline**. The investigator can accept or decline the incoming request. Accepted calls use the existing WebRTC offer/answer and ICE signaling; declining, cancellation, disconnection, or a 45-second unanswered request clears the pairing. Only the investigator's received caller track is buffered and sent for live interim analysis. Interim audio windows are 15 seconds so speech intervals are less likely to be split below the emotion model's 0.5-second minimum. The backend logs the received PCM sample count, rate, channels, encoding, peak, RMS, transcription interval count, and emotion interval skip reasons to diagnose quiet or short speech without inventing output.
+### 2. AI-Assisted Recorded Audio Analysis
+- Upload and play recorded audio evidence.
+- Generate speech transcripts using Faster-Whisper.
+- Analyze speech segments using a Wav2Vec2-based voice emotion classification model.
+- Display estimated emotion labels, confidence scores, and segment-level analysis where available.
+- Present analysis results alongside the original recording for investigator review.
 
-When the investigator ends an active call, the captured caller PCM is finalized as mono 16-kHz, signed 16-bit little-endian WAV and submitted to the existing `POST /transcribe` workflow for final full-recording analysis. Interim call output stays labeled as provisional; the existing recorded-call panel, report export, and case registration use the final transcript and actual model response. A successful case stores its metadata in the existing browser localStorage case store and the caller-only WAV in browser IndexedDB so the recording can be restored after reload. Empty calls do not create cases; interrupted calls with captured audio are marked as interrupted; failed final analysis is recorded as a failure and does not block saving the audio case. The live recording limit is 50 minutes.
+### 3. Live Cybercrime Helpline
+- Allow callers to request a live session with an available investigator.
+- Notify investigators when an incoming call is requested.
+- Support call acceptance, rejection, and termination.
+- Establish real-time caller–investigator audio communication.
+- Process live audio windows for transcription and attempted emotion analysis.
 
-The frontend connects to the backend at `http://127.0.0.1:8081`. Call availability and requests use `/ws/live-calls`; accepted sessions use the existing `/ws/signaling/{room}` endpoint with a one-time role-specific authorization, and analysis uses `/ws/live-audio/{room}`. The local broker is in-memory, single-process, and has no authentication or TURN relay. This demo is intended for two sessions on the same computer using localhost; it is not a phone integration and may not connect across restrictive networks. The live analysis runs in short windows and may lag behind the call on a CPU-bound backend. End the call when finished.
+### 4. Case Priority Management
+- Support case prioritization to help investigators identify incidents that may need earlier attention.
+- Organize investigation workflows around case information and urgency.
+- Provide a foundation for more structured case triage.
 
-## Case Priority & Intelligence prototype
+*Priority decisions should be reviewed by investigators and should not rely solely on automated predictions.*
 
-Select **Case Priority & Intelligence** in the investigator navigation. The queue contains 10 fictional, clearly marked demo records and supports search plus priority, complaint type, status, and officer filters. Case status, investigator notes, and priority overrides are saved only in the current browser's local storage. The priority assessment lives in `src\casePriorityEngine.js`; safety concerns always require urgent human review, reported loss does not determine priority, and missing indicators are treated as uncertainty rather than low risk.
+### 5. Evidence & Case Management
+- Organize audio evidence and associated analysis results.
+- Provide an audio evidence player and analysis report interface.
+- Support a more structured review of case information, transcripts, and investigation findings.
 
-The existing backend has no case-management API/database or authentication/role-based permissions. Consequently, this feature is explicitly a local demo and does not claim server persistence or authorization. Before using it with real reports, integrate a secured case API and database, enforce investigator permissions server-side, and review data minimization/retention requirements.
+### 6. Investigation Dashboard
+- Bring case information, audio analysis, and investigation workflows together.
+- Display analysis status and errors to support troubleshooting.
+- Provide access to evidence and report-related actions available in the application.
 
-Run the focused backend tests and Python syntax checks from the project directory:
+---
 
-```powershell
-python -m pytest -q tests\test_audio_processing.py tests\test_live_calls.py
-python -m py_compile main.py tests\test_audio_processing.py tests\test_live_calls.py
-npm run build
+## 🔄 How CyberMitra Works
+
+1. **Report:** Capture a cybercrime complaint or UPI fraud incident.
+2. **Create or select a case:** Organize the incident for investigation.
+3. **Collect evidence:** Upload a recorded call or handle a live helpline interaction.
+4. **Analyze:** Generate speech transcripts and attempt acoustic voice emotion classification.
+5. **Review:** Examine the transcript, audio, transaction details, and available analysis results.
+6. **Prioritize:** Use case information to support investigation triage.
+7. **Document:** Organize findings and prepare investigation-related reports.
+
+---
+
+## 🧠 AI & Audio Processing
+
+| Component | Technology |
+|---|---|
+| Speech transcription | Faster-Whisper |
+| Transcription model | Whisper Small |
+| Voice emotion estimation | Wav2Vec2 audio classification |
+| Audio decoding | PyAV |
+| Audio processing | NumPy |
+| Backend processing | Python and FastAPI |
+| Real-time communication | WebSockets and WebRTC-related signaling |
+
+**Important:** Voice emotion classification estimates acoustic patterns. It cannot establish whether someone is lying, guilty, deceptive, or involved in a crime. Predictions may also be unreliable for languages or speaking styles not adequately represented by the model.
+
+---
+
+## 🏗️ Technology Stack
+
+| Layer | Technologies |
+|---|---|
+| Frontend | React, JavaScript, CSS |
+| Build tooling | Vite |
+| Backend API | FastAPI, Python |
+| Speech recognition | Faster-Whisper |
+| Audio classification | Transformers, PyTorch |
+| Audio decoding | PyAV |
+| Numerical processing | NumPy |
+| Real-time communication | WebSockets, WebRTC-related signaling |
+| Version control | Git and GitHub |
+
+---
+
+## 📁 Project Structure
+
+```text
+CyberMitra/
+├── src/
+│   ├── main.jsx
+│   ├── style.css
+│   ├── caller.jsx
+│   ├── audioEvidenceStore.js
+│   ├── caseStore.js
+│   ├── casePriority.jsx
+│   ├── casePriorityEngine.js
+│   └── requirements.txt
+├── tests/
+│   ├── test_audio_processing.py
+│   ├── test_emotion_model_integration.py
+│   └── test_live_calls.py
+├── main.py
+├── index.html
+├── package.json
+├── package-lock.json
+├── README.md
+└── .gitignore
 ```
 
-The ordinary tests use small generated WAV fixtures and do not download model files. To explicitly smoke-test real inference against the pinned model (first run downloads and caches the roughly 380 MB model weights), use:
+*The structure above reflects the current project files; additional modules may exist in the repository.*
 
-```powershell
-$env:CYBERMITRA_RUN_MODEL_TESTS = "1"
-python -m pytest -q tests\test_emotion_model_integration.py
-Remove-Item Env:CYBERMITRA_RUN_MODEL_TESTS
+---
+
+## ⚙️ Getting Started
+
+### Prerequisites
+
+- Python installed and available through PowerShell.
+- Node.js and npm.
+- Git.
+- Internet access for installing dependencies and downloading AI models on their first use.
+- A modern browser with microphone access for live-call testing.
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/swara-y1711/CyberMitra.git
+cd CyberMitra
 ```
 
-## Limitations
+### 2. Install backend dependencies
 
-Voice emotion uses the pinned [Dpngtm/wav2vec2-emotion-recognition](https://huggingface.co/Dpngtm/wav2vec2-emotion-recognition) revision `033a5751a5bbe5b0b67c2c71e6102c38de35a346`. Its model configuration labels are **angry, calm, disgust, fearful, happy, sad, and surprised**; the backend uses those configured labels without renaming classes. This is an English-trained `Wav2Vec2ForSequenceClassification` model loaded with `AutoProcessor` and `AutoModelForAudioClassification`. PyAV decodes and resamples mono/stereo inputs to 16-kHz mono float audio, so `torchaudio` is not required. Transcript speech intervals are split into chunks of at most 8 seconds and batched for CPU inference. The overall label is the class with the highest duration-weighted mean model score over successfully analyzed intervals; the reported confidence is that same weighted mean. Interval timestamps, status, and model scores are returned separately. Inference has a five-minute processing budget; an incomplete run is marked partial. PyTorch is pinned to its Windows-compatible CPU wheel (`2.14.1+cpu`), and Transformers to `4.57.6`; PyAV `19.0.2` is pinned because the previous `14.2.0` version has no Python 3.14 Windows wheel. Model weights are downloaded from Hugging Face on first inference and cached in the standard Hugging Face cache (`HF_HOME` can point that cache elsewhere). If dependencies, network access, or cached model files are unavailable, transcription remains usable and the emotion report displays the failure details.
+From the repository root, run:
 
-Voice emotion is an uncertain acoustic estimate, not proof of deception, guilt, intent, victim status, or whether a crime occurred. Results for languages other than English may be unreliable. Review all automated output against the original audio and independent evidence. If model loading or inference fails, the transcript remains available, the report displays the backend error, and **Retry emotion analysis** retries only emotion analysis using the existing transcript segments.
+```powershell
+python -m pip install -r src/requirements.txt
+```
 
-Use only staged or consented recordings for demos. Do not upload sensitive real recordings.
+If your environment uses a virtual environment, activate it before installing dependencies.
+
+### 3. Start the backend
+
+From the directory containing `main.py`, run:
+
+```powershell
+python -m uvicorn main:app --host 127.0.0.1 --port 8081 --reload
+```
+
+The API should be available at:
+
+- API: http://127.0.0.1:8081
+- Health check: http://127.0.0.1:8081/health
+- Interactive API documentation: http://127.0.0.1:8081/docs
+
+The first transcription or emotion-analysis request may take longer while the required model files are downloaded and initialized.
+
+### 4. Install frontend dependencies
+
+Open a second terminal in the repository root:
+
+```powershell
+npm install
+```
+
+### 5. Start the frontend
+
+```powershell
+npm run dev
+```
+
+Open the local URL printed by the frontend development server, typically:
+
+http://localhost:5173
+
+If the frontend cannot reach the backend, check the configured `BACKEND_URL` in the frontend code, the backend port, and the FastAPI CORS settings.
+
+### 6. Test the application
+
+- Open the investigator dashboard.
+- Upload a supported audio file and run analysis.
+- Check the transcript and voice emotion report.
+- Open a separate browser session for the caller interface.
+- Start a live session and test incoming-call notification and two-way audio.
+- Verify evidence saving and case association separately; successful live communication alone does not guarantee that a persistent recording was saved.
+
+---
+
+## 🧪 Testing
+
+The repository includes tests for audio processing, emotion-model integration, and live-call functionality.
+
+Review the test requirements and run the suite from the repository root:
+
+```powershell
+python -m pytest tests -v
+```
+
+Some tests may require additional dependencies, model downloads, or specific runtime conditions. A passing test suite should be verified in the target environment before deployment.
+
+---
+
+## 🔐 Security & Responsible Use
+
+CyberMitra is intended to assist human investigators, not replace their judgment.
+
+- Protect personally identifiable information, transaction details, and recorded calls.
+- Never commit API keys, credentials, private recordings, or sensitive case data.
+- Restrict access to investigation records and audio evidence.
+- Use secure communication and appropriate authentication before production deployment.
+- Validate uploaded files and enforce appropriate size limits.
+- Treat AI-generated transcripts and acoustic emotion estimates as fallible outputs.
+- Do not use voice emotion predictions as proof of deception, guilt, intent, or criminal activity.
+
+---
+
+## 🚧 Current Scope & Limitations
+
+CyberMitra is an evolving prototype.
+
+- Speech transcription and emotion analysis depend on audio quality, model availability, and supported languages.
+- Emotion analysis may fail for some recordings or return no usable predictions.
+- Live audio communication and live audio analysis are separate from persistent call recording.
+- Persistent recording, evidence storage, and case association must be verified for the specific deployment.
+- Case prioritization supports triage and should be validated against real investigation requirements.
+- Production deployment requires further work on authentication, authorization, privacy, audit logging, and secure evidence retention.
+
+---
+
+## 🔮 Future Enhancements
+
+- Stronger evidence lifecycle management and audit trails.
+- Improved multilingual transcription and evaluation.
+- Secure case-level access control and investigator authentication.
+- More robust case-priority scoring and explainability.
+- Integration with authorized cybercrime reporting and investigation systems.
+- Automated regression tests for recorded and live audio workflows.
+- Deployment hardening and monitoring.
+
+---
+
+## 🎯 Project Vision
+
+CyberMitra aims to bring complaint handling, audio evidence analysis, live helpline communication, and investigation triage into a single workflow.
+
+By combining practical software engineering with AI-assisted analysis, the project seeks to help investigators review evidence more efficiently while keeping important investigative decisions under human control.
+
+---
+
+**GitHub:** https://github.com/swara-y1711/CyberMitra
+
+Built as an evolving cybersecurity investigation prototype.

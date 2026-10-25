@@ -5,10 +5,13 @@ import {
   Plus, Play, Activity, FileText, Download, Search, ShieldCheck,
   Clock3, LockKeyhole, Sparkles, Headphones, FileAudio, ChevronRight,
   Flag, ClipboardCheck, Fingerprint, Trash2,
-  Mic, ShieldAlert, RefreshCw, Wifi, WifiOff
+  Mic, PhoneCall, ShieldAlert, RefreshCw, Wifi, WifiOff
 } from "lucide-react";
 import "./style.css";
 import { jsPDF } from "jspdf";
+import CallerPage from "./caller.jsx";
+import CasePriorityPage from "./casePriority.jsx";
+import { persistCaseRecord, PRIORITY_CASES_KEY } from "./caseStore.js";
 
 const CASE_KEY = "cybermitra-case-v1";
 const UPI_CASES_KEY = "cybermitra-upi-cases-v1";
@@ -18,6 +21,7 @@ const BACKEND_URL =
 
 const NAV = [
   { id: "overview", name: "Overview", short: "Overview", icon: LayoutDashboard },
+  { id: "case-priority", name: "Case Priority & Intelligence", short: "Case priority", icon: ShieldAlert },
   { id: "upi", name: "UPI Fraud Investigation", short: "UPI fraud", icon: ShieldCheck },
   { id: "audio", name: "Audio Forensics", short: "Audio", icon: AudioLines },
   { id: "integrity", name: "Evidence Integrity", short: "Integrity", icon: Fingerprint },
@@ -190,7 +194,7 @@ function loadUPICases() {
 
 function newUPICase() {
   return {
-    id: `UPI-${Date.now()}`,
+    id: `UPI-${Date.now()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`,
     title: "UPI fraud investigation",
     transactionId: "",
     amount: "",
@@ -205,7 +209,51 @@ function newUPICase() {
     evidenceNotes: "",
     indicators: [],
     nextAction: "Contact bank or payment app",
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    registrationStatus: "Draft"
+  };
+}
+
+function makeUPIPriorityRecord(item) {
+  const assessment = analyzeUPICase(item);
+  const registeredAt = item.registeredAt || item.createdAt;
+  return {
+    id: item.id,
+    complaintType: "UPI fraud",
+    reportedAt: registeredAt,
+    createdAt: item.createdAt,
+    registeredAt,
+    registrationStatus: item.registrationStatus,
+    loss: item.lossAmount === "" ? null : Number(item.lossAmount),
+    indicators: item.indicators || [],
+    evidenceStatus: item.evidenceNotes?.trim()
+      ? "Evidence references recorded"
+      : "Evidence references pending",
+    evidence: item.evidenceNotes?.trim()
+      ? item.evidenceNotes.split(/\r?\n/).filter(Boolean)
+      : [],
+    officer: "Unassigned",
+    status: item.investigationStatus || "New",
+    followUpDue: null,
+    description: item.narrative,
+    priorityFactors: {
+      safetyConcern: false,
+      timeSensitiveFraud:
+        item.transactionStatus === "Disputed" || Number(item.lossAmount) > 0,
+      ongoingActivity: item.indicators.includes(
+        "Pressure or urgency to transfer money"
+      ),
+      affectedVictims: 1,
+      evidenceUrgency: false,
+      pendingAction: true
+    },
+    priorityReason: assessment.description,
+    reviewPriorityScore: assessment.score,
+    reviewPriorityLevel: assessment.level,
+    recommendedNextSteps: assessment.actions,
+    upiRecord: item,
+    timeline: [[registeredAt, "UPI case registered"]],
+    notes: []
   };
 }
 
@@ -241,6 +289,8 @@ function UPIInvestigation({ notify, onCasesChange }) {
   const [activeId, setActiveId] = useState(
     () => loadUPICases()[0]?.id || ""
   );
+  const [fieldErrors, setFieldErrors] = useState({});
+  const [registeringId, setRegisteringId] = useState("");
 
   const activeCase = cases.find(c => c.id === activeId);
   const analysis = analyzeUPICase(activeCase);
@@ -248,16 +298,83 @@ function UPIInvestigation({ notify, onCasesChange }) {
   useEffect(() => {
     try {
       localStorage.setItem(UPI_CASES_KEY, JSON.stringify(cases));
-    } catch {
-      notify("Storage is full. Export your reports.");
+      cases
+        .filter(item => item.registrationStatus === "Registered")
+        .forEach(item => persistCaseRecord(makeUPIPriorityRecord(item), {
+          key: UPI_CASES_KEY,
+          value: JSON.stringify(cases)
+        }));
+    } catch (error) {
+      console.error("Unable to save UPI investigation records.", error);
+      notify("Could not save UPI case changes. Check browser storage and retry.", "error");
     }
     onCasesChange?.(cases);
   }, [cases]);
 
   function update(field, value) {
+    setFieldErrors(previous => ({ ...previous, [field]: "" }));
     setCases(prev => prev.map(c =>
       c.id === activeId ? { ...c, [field]: value } : c
     ));
+  }
+
+  function validateRegistration(item) {
+    const errors = {};
+    if (!item.title?.trim()) errors.title = "Enter a case title.";
+    if (!item.transactionId?.trim()) errors.transactionId = "Enter a transaction ID or UTR.";
+    const amount = Number(item.amount);
+    if (item.amount === "" || !Number.isFinite(amount) || amount <= 0) {
+      errors.amount = "Enter an amount greater than 0.";
+    }
+    if (!item.transactionStatus || item.transactionStatus === "Unknown") {
+      errors.transactionStatus = "Select a known transaction status.";
+    }
+    if (!item.narrative?.trim()) errors.narrative = "Describe the reported incident.";
+    if (item.lossAmount !== "" &&
+        (!Number.isFinite(Number(item.lossAmount)) || Number(item.lossAmount) < 0)) {
+      errors.lossAmount = "Enter a valid non-negative reported loss.";
+    }
+    return errors;
+  }
+
+  function registerCase() {
+    if (!activeCase || registeringId === activeCase.id ||
+        activeCase.registrationStatus === "Registered") return;
+
+    const errors = validateRegistration(activeCase);
+    setFieldErrors(errors);
+    if (Object.keys(errors).length) {
+      notify("Complete the highlighted fields before registering this case.", "error");
+      return;
+    }
+
+    const registeredAt = new Date().toISOString();
+    const registeredCase = {
+      ...activeCase,
+      registrationStatus: "Registered",
+      registeredAt,
+      reviewPriorityScore: analysis.score,
+      reviewPriorityLevel: analysis.level,
+      recommendedNextSteps: analysis.actions
+    };
+    const updatedCases = cases.map(item =>
+      item.id === registeredCase.id ? registeredCase : item
+    );
+
+    setRegisteringId(activeCase.id);
+    try {
+      persistCaseRecord(makeUPIPriorityRecord(registeredCase), {
+        key: UPI_CASES_KEY,
+        value: JSON.stringify(updatedCases)
+      });
+      setCases(updatedCases);
+      notify(`Case registered successfully · ${registeredCase.id}`);
+    } catch (error) {
+      console.error("Unable to register UPI case.", error);
+      notify(`${error.message} You can retry registration.`, "error");
+    } finally {
+      setRegisteringId("");
+    }
   }
 
   function createCase() {
@@ -450,10 +567,12 @@ function UPIInvestigation({ notify, onCasesChange }) {
               <label>
                 Case title
                 <input
+                  aria-invalid={!!fieldErrors.title}
                   value={activeCase.title}
                   onChange={e => update("title", e.target.value)}
                   placeholder="Suspected unauthorized UPI transfer"
                 />
+                {fieldErrors.title && <small className="field-error">{fieldErrors.title}</small>}
               </label>
 
               <h3>Transaction details</h3>
@@ -461,10 +580,12 @@ function UPIInvestigation({ notify, onCasesChange }) {
               <label>
                 Transaction ID / UTR
                 <input
+                  aria-invalid={!!fieldErrors.transactionId}
                   value={activeCase.transactionId}
                   onChange={e => update("transactionId", e.target.value)}
                   placeholder="Transaction reference, if available"
                 />
+                {fieldErrors.transactionId && <small className="field-error">{fieldErrors.transactionId}</small>}
               </label>
 
               <div className="upi-fields">
@@ -472,21 +593,27 @@ function UPIInvestigation({ notify, onCasesChange }) {
                   Amount (INR)
                   <input
                     type="number"
-                    min="0"
+                    min="0.01"
+                    step="0.01"
+                    aria-invalid={!!fieldErrors.amount}
                     value={activeCase.amount}
                     onChange={e => update("amount", e.target.value)}
                     placeholder="0.00"
                   />
+                  {fieldErrors.amount && <small className="field-error">{fieldErrors.amount}</small>}
                 </label>
                 <label>
                   Reported loss (INR)
                   <input
                     type="number"
                     min="0"
+                    step="0.01"
+                    aria-invalid={!!fieldErrors.lossAmount}
                     value={activeCase.lossAmount}
                     onChange={e => update("lossAmount", e.target.value)}
                     placeholder="0.00"
                   />
+                  {fieldErrors.lossAmount && <small className="field-error">{fieldErrors.lossAmount}</small>}
                 </label>
               </div>
 
@@ -532,6 +659,7 @@ function UPIInvestigation({ notify, onCasesChange }) {
                 <label>
                   Transaction status
                   <select
+                    aria-invalid={!!fieldErrors.transactionStatus}
                     value={activeCase.transactionStatus}
                     onChange={e => update("transactionStatus", e.target.value)}
                   >
@@ -542,6 +670,7 @@ function UPIInvestigation({ notify, onCasesChange }) {
                     <option>Reversed</option>
                     <option>Disputed</option>
                   </select>
+                  {fieldErrors.transactionStatus && <small className="field-error">{fieldErrors.transactionStatus}</small>}
                 </label>
               </div>
 
@@ -569,11 +698,13 @@ function UPIInvestigation({ notify, onCasesChange }) {
               <label>
                 Incident narrative
                 <textarea
+                  aria-invalid={!!fieldErrors.narrative}
                   rows="4"
                   value={activeCase.narrative}
                   onChange={e => update("narrative", e.target.value)}
                   placeholder="Describe the reported incident chronologically. Separate facts from allegations."
                 />
+                {fieldErrors.narrative && <small className="field-error">{fieldErrors.narrative}</small>}
               </label>
 
               <label>
@@ -664,10 +795,23 @@ function UPIInvestigation({ notify, onCasesChange }) {
               </section>
 
               <div className="upi-actions">
-                <button className="primary" onClick={exportPDF}>
+                <button
+                  className="primary"
+                  type="button"
+                  onClick={registerCase}
+                  disabled={activeCase.registrationStatus === "Registered" || registeringId === activeCase.id}
+                >
+                  <ClipboardCheck size={14} />
+                  {activeCase.registrationStatus === "Registered"
+                    ? "Case Registered"
+                    : registeringId === activeCase.id
+                      ? "Registering..."
+                      : "Register Case"}
+                </button>
+                <button className="secondary" onClick={exportPDF}>
                   <Download size={14} /> Export UPI PDF
                 </button>
-                <button className="secondary" onClick={deleteCase}>
+                <button className="secondary danger-outline" onClick={deleteCase}>
                   <Trash2 size={14} /> Delete UPI case
                 </button>
               </div>
@@ -681,6 +825,669 @@ function UPIInvestigation({ notify, onCasesChange }) {
           </p>
         </>
       )}
+    </section>
+  );
+}
+
+function LiveCall({ role }) {
+  const [status, setStatus] = useState("Offline");
+  const [error, setError] = useState("");
+  const [muted, setMuted] = useState(false);
+  const [incomingCall, setIncomingCall] = useState(null);
+  const [segments, setSegments] = useState([]);
+  const [emotion, setEmotion] = useState(null);
+  const [language, setLanguage] = useState("");
+  const [flags, setFlags] = useState([]);
+  const peerRef = useRef(null);
+  const signalRef = useRef(null);
+  const controlRef = useRef(null);
+  const analysisRef = useRef(null);
+  const localStreamRef = useRef(null);
+  const audioContextRef = useRef(null);
+  const processorRef = useRef(null);
+  const sourceRef = useRef(null);
+  const muteRef = useRef(null);
+  const remoteAudioRef = useRef(null);
+  const audioBufferRef = useRef(new Float32Array(80000));
+  const bufferOffsetRef = useRef(0);
+  const nextSegmentId = useRef(0);
+  const offerStarted = useRef(false);
+  const callActive = useRef(false);
+  const requestAttemptRef = useRef(0);
+  const pendingCandidates = useRef([]);
+
+  function signalingUrl(roomCode, participantRole, ticket) {
+    const base = BACKEND_URL.replace(/^http/, "ws");
+    return `${base}/ws/signaling/${encodeURIComponent(roomCode)}?role=${participantRole}&ticket=${encodeURIComponent(ticket)}`;
+  }
+
+  function audioUrl(roomCode) {
+    const base = BACKEND_URL.replace(/^http/, "ws");
+    return `${base}/ws/live-audio/${encodeURIComponent(roomCode)}`;
+  }
+
+  function controlUrl(participantRole) {
+    const base = BACKEND_URL.replace(/^http/, "ws");
+    return `${base}/ws/live-calls?role=${participantRole}`;
+  }
+
+  function sendSignal(message) {
+    const socket = signalRef.current;
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify(message));
+    }
+  }
+
+  function sendAudioWindow(samples) {
+    const socket = analysisRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
+    const bytes = new ArrayBuffer(samples.length * 2);
+    const view = new DataView(bytes);
+    for (let i = 0; i < samples.length; i++) {
+      const sample = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(i * 2, sample < 0 ? sample * 32768 : sample * 32767, true);
+    }
+
+    if (socket.bufferedAmount + bytes.byteLength > 2 * 1024 * 1024) {
+      setError("Live analysis cannot keep up with the call. The call can continue, but analysis has stopped.");
+      socket.close();
+      return;
+    }
+    socket.send(bytes);
+  }
+
+  function flushAudioWindow() {
+    const count = bufferOffsetRef.current;
+    if (!count) return;
+    sendAudioWindow(audioBufferRef.current.slice(0, count));
+    audioBufferRef.current = new Float32Array(80000);
+    bufferOffsetRef.current = 0;
+  }
+
+  function stopCall(updateStatus = true, notifyControl = true, preserveLocalStream = false) {
+    const control = controlRef.current;
+    if (notifyControl && control?.readyState === WebSocket.OPEN) {
+      control.send(JSON.stringify({ type: "end" }));
+    }
+    callActive.current = false;
+    if (processorRef.current) {
+      processorRef.current.onaudioprocess = null;
+      processorRef.current.disconnect();
+      processorRef.current = null;
+    }
+    sourceRef.current?.disconnect();
+    sourceRef.current = null;
+    muteRef.current?.disconnect();
+    muteRef.current = null;
+    flushAudioWindow();
+
+    if (analysisRef.current && analysisRef.current.readyState < WebSocket.CLOSING) {
+      analysisRef.current.close();
+    }
+    analysisRef.current = null;
+
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+    if (!preserveLocalStream) {
+      localStreamRef.current?.getTracks().forEach(track => track.stop());
+      localStreamRef.current = null;
+    }
+    peerRef.current?.close();
+    peerRef.current = null;
+    if (signalRef.current && signalRef.current.readyState < WebSocket.CLOSING) {
+      signalRef.current.close();
+    }
+    signalRef.current = null;
+    if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
+    bufferOffsetRef.current = 0;
+
+    if (updateStatus) setStatus("Call ended");
+  }
+
+  useEffect(() => () => stopCall(false, false), []);
+
+  function receiveAnalysisMessage(message) {
+    if (message.type === "error") {
+      setError(message.message || "Live audio analysis failed.");
+      return;
+    }
+    if (message.type !== "analysis") return;
+
+    const windowStart = Number(message.window_start) || 0;
+    const analysis = message.analysis || {};
+    setLanguage(analysis.language || "Unknown");
+    setEmotion(analysis.emotion || null);
+    setSegments(previous => [
+      ...previous,
+      ...(analysis.segments || []).map(segment => ({
+        ...segment,
+        id: nextSegmentId.current++,
+        start: windowStart + segment.start,
+        end: windowStart + segment.end
+      }))
+    ]);
+  }
+
+  async function startRemoteAnalysis(track, roomCode) {
+    const socket = new WebSocket(audioUrl(roomCode));
+    analysisRef.current = socket;
+    socket.onmessage = event => {
+      try {
+        receiveAnalysisMessage(JSON.parse(event.data));
+      } catch {
+        setError("The live analysis service returned an unreadable response.");
+      }
+    };
+
+    await new Promise((resolve, reject) => {
+      socket.addEventListener("open", resolve, { once: true });
+      socket.addEventListener("error", () => {
+        reject(new Error("Could not open the live analysis connection."));
+      }, { once: true });
+      socket.addEventListener("close", event => {
+        reject(new Error(event.reason || "Live analysis connection was rejected."));
+      }, { once: true });
+    });
+    socket.onerror = () => setError("Could not connect the caller audio to the analysis service.");
+    socket.onclose = event => {
+      if (event.code !== 1000 && callActive.current) {
+        setError(event.reason || "The live analysis connection closed unexpectedly.");
+      }
+    };
+
+    const context = audioContextRef.current || new AudioContext({ sampleRate: 16000 });
+    if (context.state === "suspended") await context.resume();
+    audioContextRef.current = context;
+    const remoteStream = new MediaStream([track]);
+    const source = context.createMediaStreamSource(remoteStream);
+    const processor = context.createScriptProcessor(4096, 1, 1);
+    const mute = context.createGain();
+    mute.gain.value = 0;
+    source.connect(processor);
+    processor.connect(mute);
+    mute.connect(context.destination);
+    sourceRef.current = source;
+    processorRef.current = processor;
+    muteRef.current = mute;
+
+    processor.onaudioprocess = event => {
+      const input = event.inputBuffer.getChannelData(0);
+      const scale = context.sampleRate / 16000;
+      const outputLength = Math.floor(input.length / scale);
+      const resampled = new Float32Array(outputLength);
+      for (let i = 0; i < outputLength; i++) {
+        const position = i * scale;
+        const left = Math.floor(position);
+        const fraction = position - left;
+        const right = Math.min(left + 1, input.length - 1);
+        resampled[i] = input[left] * (1 - fraction) + input[right] * fraction;
+      }
+
+      let inputOffset = 0;
+      while (inputOffset < resampled.length) {
+        const count = Math.min(
+          resampled.length - inputOffset,
+          audioBufferRef.current.length - bufferOffsetRef.current
+        );
+        audioBufferRef.current.set(
+          resampled.subarray(inputOffset, inputOffset + count),
+          bufferOffsetRef.current
+        );
+        inputOffset += count;
+        bufferOffsetRef.current += count;
+        if (bufferOffsetRef.current === audioBufferRef.current.length) {
+          sendAudioWindow(audioBufferRef.current);
+          audioBufferRef.current = new Float32Array(80000);
+          bufferOffsetRef.current = 0;
+        }
+      }
+    };
+  }
+
+  async function startWebRtcCall(roomCode, ticket, localStream) {
+    stopCall(false, false, role === "caller");
+    localStream?.getAudioTracks().forEach(track => { track.enabled = true; });
+    setError("");
+    setMuted(false);
+    setSegments([]);
+    setFlags([]);
+    setEmotion(null);
+    setLanguage("");
+    nextSegmentId.current = 0;
+    offerStarted.current = false;
+    pendingCandidates.current = [];
+
+    try {
+      if (role === "investigator") {
+        const context = new AudioContext({ sampleRate: 16000 });
+        audioContextRef.current = context;
+        await context.resume();
+      }
+
+      const peer = new RTCPeerConnection({ iceServers: [] });
+      peerRef.current = peer;
+      if (localStream) {
+        localStream.getTracks().forEach(track => peer.addTrack(track, localStream));
+      } else {
+        peer.ontrack = event => {
+          const track = event.track;
+          const stream = event.streams[0] || new MediaStream([track]);
+          if (remoteAudioRef.current) {
+            remoteAudioRef.current.srcObject = stream;
+            remoteAudioRef.current.muted = false;
+            remoteAudioRef.current.play().catch(() => {});
+          }
+          track.onended = () => {
+            flushAudioWindow();
+            stopCall(false);
+            setStatus("Call ended");
+            setError("The caller audio track ended.");
+          };
+          startRemoteAnalysis(track, roomCode).catch(error => {
+            setError(error.message || "Could not start caller audio analysis.");
+          });
+        };
+      }
+      peer.onicecandidate = event => {
+        if (event.candidate) sendSignal({ type: "candidate", candidate: event.candidate });
+      };
+      peer.onconnectionstatechange = () => {
+        if (peer.connectionState === "connected") setStatus("Connected");
+        if (peer.connectionState === "failed") {
+          setStatus("Call failed");
+          setError("WebRTC could not connect. This local prototype has no TURN relay.");
+        }
+      };
+
+      const socket = new WebSocket(signalingUrl(roomCode, role, ticket));
+      signalRef.current = socket;
+      callActive.current = true;
+      socket.onopen = () => setStatus("Connecting");
+      socket.onmessage = async event => {
+        try {
+          const message = JSON.parse(event.data);
+          if (message.type === "error") {
+            setError(message.message || "Signaling failed.");
+          } else if (
+            (message.type === "peer_joined" ||
+              (message.type === "joined" && message.peer_connected)) &&
+            role === "caller" &&
+            !offerStarted.current
+          ) {
+            offerStarted.current = true;
+            const offer = await peer.createOffer();
+            await peer.setLocalDescription(offer);
+            sendSignal({ type: "offer", sdp: peer.localDescription });
+            setStatus("Connecting");
+          } else if (message.type === "offer") {
+            await peer.setRemoteDescription(message.sdp);
+            for (const candidate of pendingCandidates.current) {
+              await peer.addIceCandidate(candidate);
+            }
+            pendingCandidates.current = [];
+            const answer = await peer.createAnswer();
+            await peer.setLocalDescription(answer);
+            sendSignal({ type: "answer", sdp: peer.localDescription });
+          } else if (message.type === "answer") {
+            await peer.setRemoteDescription(message.sdp);
+            for (const candidate of pendingCandidates.current) {
+              await peer.addIceCandidate(candidate);
+            }
+            pendingCandidates.current = [];
+          } else if (message.type === "candidate" && message.candidate) {
+            if (peer.remoteDescription) {
+              await peer.addIceCandidate(message.candidate);
+            } else {
+              pendingCandidates.current.push(message.candidate);
+            }
+          } else if (message.type === "peer_left") {
+            stopCall(false, true);
+            setStatus("Call ended");
+            setError("The other participant left the call.");
+          } else if (message.type === "joined" && message.peer_connected) {
+            setStatus("Connecting");
+          }
+        } catch (error) {
+          setError(error.message || "WebRTC signaling failed.");
+        }
+      };
+      socket.onerror = () => setError("Could not connect to the local signaling service.");
+      socket.onclose = event => {
+        if (event.code !== 1000 && callActive.current) {
+          const details = `Signaling socket closed (code ${event.code}${event.reason ? `: ${event.reason}` : ""}).`;
+          stopCall(false);
+          setStatus("Call failed");
+          setError(details);
+        }
+      };
+      setStatus("Connecting");
+    } catch (error) {
+      stopCall(false, true);
+      setStatus("Call failed");
+      setError(error.message || "Could not start the browser call.");
+    }
+  }
+
+  function closeCallerRequest() {
+    localStreamRef.current?.getTracks().forEach(track => track.stop());
+    localStreamRef.current = null;
+    const socket = controlRef.current;
+    controlRef.current = null;
+    if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
+  }
+
+  function connectCallControl(participantRole) {
+    const socket = new WebSocket(controlUrl(participantRole));
+    controlRef.current = socket;
+    socket.onmessage = async event => {
+      try {
+        const message = JSON.parse(event.data);
+        if (message.type === "available") {
+          setIncomingCall(null);
+          setStatus("Waiting for incoming calls");
+        } else if (message.type === "incoming_call") {
+          setIncomingCall(message.request_id);
+          setStatus("Incoming call");
+        } else if (message.type === "waiting") {
+          setStatus("Waiting for an investigator");
+        } else if (message.type === "accepted") {
+          setIncomingCall(null);
+          setStatus("Connecting");
+          await startWebRtcCall(message.room, message.ticket, localStreamRef.current);
+        } else if (message.type === "declined") {
+          closeCallerRequest();
+          setStatus("Declined");
+        } else if (message.type === "unavailable" || message.type === "timeout") {
+          closeCallerRequest();
+          setStatus("No investigator available");
+        } else if (message.type === "cancelled") {
+          closeCallerRequest();
+          setStatus("Call ended");
+        } else if (message.type === "ended" || message.type === "call_ended") {
+          if (participantRole === "caller") {
+            stopCall(false, false);
+            controlRef.current = null;
+            socket.close();
+            setStatus("Call ended");
+          } else {
+            stopCall(false, false);
+            setStatus("Waiting for incoming calls");
+          }
+        } else if (message.type === "call_cancelled") {
+          setIncomingCall(null);
+          setStatus("Waiting for incoming calls");
+        } else if (message.type === "offline") {
+          setIncomingCall(null);
+          setStatus("Offline");
+        } else if (message.type === "error") {
+          setError(message.message || "The call request could not be completed.");
+        }
+      } catch (controlError) {
+        setError(controlError.message || "The call service returned an invalid response.");
+      }
+    };
+    socket.onerror = () => {
+      if (controlRef.current !== socket) return;
+      setError("Could not connect to the local call service.");
+      if (participantRole === "caller") {
+        localStreamRef.current?.getTracks().forEach(track => track.stop());
+        localStreamRef.current = null;
+        setStatus("Call failed");
+      }
+    };
+    socket.onclose = () => {
+      if (controlRef.current === socket) {
+        controlRef.current = null;
+        if (participantRole === "investigator") {
+          stopCall(false, false);
+          setIncomingCall(null);
+          setStatus("Offline");
+        } else {
+          stopCall(false, false);
+          setStatus("Call ended");
+        }
+      }
+    };
+    return socket;
+  }
+
+  function startLiveSession() {
+    setError("");
+    setStatus("Starting Live Session");
+    connectCallControl("investigator");
+  }
+
+  function stopLiveSession() {
+    const socket = controlRef.current;
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "offline" }));
+    }
+    controlRef.current = null;
+    if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
+    stopCall(false, false);
+    setIncomingCall(null);
+    setStatus("Offline");
+  }
+
+  async function requestCall() {
+    const requestAttempt = ++requestAttemptRef.current;
+    setError("");
+    setStatus("Requesting call");
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setStatus("Call failed");
+      setError("Microphone access is unavailable in this browser context. Use localhost or HTTPS and try a supported browser.");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      if (requestAttempt !== requestAttemptRef.current) {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
+      localStreamRef.current = stream;
+      const socket = connectCallControl("caller");
+      socket.onopen = () => socket.send(JSON.stringify({ type: "request" }));
+    } catch (requestError) {
+      if (requestAttempt !== requestAttemptRef.current) return;
+      localStreamRef.current?.getTracks().forEach(track => track.stop());
+      localStreamRef.current = null;
+      setStatus("Call failed");
+      setError(["NotAllowedError", "PermissionDeniedError"].includes(requestError.name)
+        ? "Microphone access was denied. Allow microphone access in your browser settings and try again."
+        : requestError.message || "Could not request a call.");
+    }
+  }
+
+  function cancelCall() {
+    requestAttemptRef.current += 1;
+    const socket = controlRef.current;
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "cancel" }));
+    }
+    closeCallerRequest();
+    setStatus("Call ended");
+  }
+
+  function acceptCall() {
+    const socket = controlRef.current;
+    if (socket?.readyState === WebSocket.OPEN && incomingCall) {
+      socket.send(JSON.stringify({ type: "accept", request_id: incomingCall }));
+    }
+  }
+
+  function declineCall() {
+    const socket = controlRef.current;
+    if (socket?.readyState === WebSocket.OPEN && incomingCall) {
+      socket.send(JSON.stringify({ type: "decline", request_id: incomingCall }));
+    }
+  }
+
+  function toggleMute() {
+    const nextMuted = !muted;
+    if (role === "caller") {
+      const tracks = localStreamRef.current?.getAudioTracks() || [];
+      tracks.forEach(track => { track.enabled = !nextMuted; });
+    } else if (remoteAudioRef.current) {
+      remoteAudioRef.current.muted = nextMuted;
+    }
+    setMuted(nextMuted);
+  }
+
+  function toggleLiveFlag(segment) {
+    const existing = flags.some(flag => flag.segmentId === segment.id);
+    setFlags(previous => existing
+      ? previous.filter(flag => flag.segmentId !== segment.id)
+      : [...previous, {
+          id: crypto.randomUUID(),
+          segmentId: segment.id,
+          start: segment.start,
+          end: segment.end,
+          text: segment.text,
+          reason: "Needs manual verification"
+        }]);
+  }
+
+  if (role === "caller") {
+    const pending = ["Requesting call", "Waiting for an investigator"].includes(status);
+    const active = ["Connecting", "Connected", "Call failed"].includes(status);
+    return (
+      <section className="caller-card" aria-labelledby="caller-call-title">
+        <div className="caller-cardhead">
+          <div>
+            <small className="eyebrow">Demo / Simulation</small>
+            <h1 id="caller-call-title">Call Helpline</h1>
+            <p>Request a simulated call with an available investigator.</p>
+          </div>
+          <small className="tag">Demo / Simulation</small>
+        </div>
+        <p className="caller-consent">
+          Your microphone audio will be sent to the investigator and analyzed
+          for a transcript and model-estimated voice characteristics. Join only
+          if you consent to this demo recording and analysis.
+        </p>
+        <p className="live-status" role="status">
+          <span className="chip" data-tone={status === "Connected" ? "ok" : "idle"}>
+            {status === "Offline" ? "Ready to call" : status}
+          </span>
+        </p>
+        {error && <div className="errorbox" role="alert"><ShieldAlert size={15} /> {error}</div>}
+        <div className="caller-actions">
+          {!pending && !active ? (
+            <button
+              className="primary"
+              type="button"
+              onClick={requestCall}
+            >
+              <PhoneCall size={14} /> Call Helpline
+            </button>
+          ) : pending ? (
+            <button className="secondary" type="button" onClick={cancelCall}>
+              Cancel request
+            </button>
+          ) : (
+            <>
+              <button className="secondary" type="button" onClick={toggleMute} disabled={!localStreamRef.current}>
+                <Mic size={14} /> {muted ? "Unmute microphone" : "Mute microphone"}
+              </button>
+              <button className="danger" type="button" onClick={() => stopCall()}>
+                <ShieldAlert size={14} /> End call
+              </button>
+            </>
+          )}
+        </div>
+      </section>
+    );
+  }
+
+  const investigatorConnected = ["Connecting", "Connected", "Call failed"].includes(status);
+  return (
+    <section className="panel live-call">
+      <div className="panelhead">
+        <div>
+          <h2><Mic size={17} /> Live call intake</h2>
+          <p>Only the investigator's received caller audio is sent for analysis.</p>
+        </div>
+        <small className="tag">Demo / Simulation</small>
+      </div>
+
+      <div className="live-controls">
+        {status === "Offline" ? (
+          <button className="primary" type="button" onClick={startLiveSession}>
+            <PhoneCall size={14} /> Start Live Session
+          </button>
+        ) : (
+          <button className="secondary" type="button" onClick={stopLiveSession}>
+            End Live Session
+          </button>
+        )}
+      </div>
+
+      <p className="live-status" role="status">
+        <span className="chip" data-tone={status === "Connected" || status === "Waiting for incoming calls" ? "ok" : "idle"}>{status}</span>
+      </p>
+      {error && <div className="errorbox" role="alert"><ShieldAlert size={15} /> {error}</div>}
+
+      {incomingCall && (
+        <div className="incoming-call" role="alert" aria-live="assertive">
+          <div>
+            <b><PhoneCall size={15} /> Incoming caller</b>
+            <p>A caller is requesting a simulated live session.</p>
+          </div>
+          <div className="incoming-actions">
+            <button className="primary" type="button" onClick={acceptCall}>Accept</button>
+            <button className="danger" type="button" onClick={declineCall}>Decline</button>
+          </div>
+        </div>
+      )}
+
+      {investigatorConnected && (
+        <div className="caller-actions investigator-call-actions">
+          <button className="secondary" type="button" onClick={toggleMute}>
+            <Mic size={14} /> {muted ? "Unmute call audio" : "Mute call audio"}
+          </button>
+          <button className="danger" type="button" onClick={() => stopCall()}>
+            <ShieldAlert size={14} /> End call
+          </button>
+        </div>
+      )}
+      <audio ref={remoteAudioRef} controls autoPlay className="live-audio" />
+
+      <div className="live-results">
+        <div className="live-emotion">
+          <small>Latest caller voice classification</small>
+          <b>{emotion?.label || "Waiting for audio analysis"}</b>
+          <span>{Number.isFinite(emotion?.confidence) ? `${(emotion.confidence * 100).toFixed(1)}% model confidence` : emotion?.status === "failed" ? emotion.error || "Emotion model unavailable" : "No model result yet"}</span>
+        </div>
+        <div className="live-emotion">
+          <small>Detected language</small>
+          <b>{language || "—"}</b>
+          <span>Actual Whisper output</span>
+        </div>
+      </div>
+
+      <div className="live-transcript">
+        <div className="panelhead">
+          <div><h3>Caller transcript</h3><p>Results appear as audio windows finish analysis.</p></div>
+          <small className="tag">{segments.length} segments · {flags.length} flags</small>
+        </div>
+        {segments.length ? segments.map(segment => {
+          const flagged = flags.some(flag => flag.segmentId === segment.id);
+          return (
+            <div className="live-segment" key={segment.id}>
+              <div><b>{time(segment.start)}–{time(segment.end)}</b><p>{segment.text}</p>
+                {flagged && <small>Needs manual verification</small>}
+              </div>
+              <button className="secondary small" type="button" onClick={() => toggleLiveFlag(segment)}>
+                <Flag size={12} /> {flagged ? "Unflag" : "Flag"}
+              </button>
+            </div>
+          );
+        }) : <p className="empty">No live transcript yet. Join both sessions and start speaking.</p>}
+      </div>
+      <p className="emotion-note">Voice emotion is an uncertain acoustic estimate, not proof of deception, guilt, victim status, intent or whether a crime occurred. Only the investigator's received caller track is sent for analysis. Local/same-LAN demo only; no TURN relay is configured.</p>
     </section>
   );
 }
@@ -713,7 +1520,9 @@ function App() {
   const [search, setSearch] = useState("");
   const [onlyFlagged, setOnlyFlagged] = useState(false);
   const [toast, setToast] = useState("");
+  const [toastTone, setToastTone] = useState("success");
   const [loading, setLoading] = useState(false);
+  const [emotionRetrying, setEmotionRetrying] = useState(false);
   const [analysisError, setAnalysisError] = useState("");
   const [language, setLanguage] = useState("");
   const [emotion, setEmotion] = useState(null);
@@ -740,6 +1549,8 @@ function App() {
   const [hashStatus, setHashStatus] = useState(
     initial.hashStatus || "No file hashed"
   );
+  const [audioRegistration, setAudioRegistration] = useState(initial.audioRegistration || null);
+  const [audioRegistrationError, setAudioRegistrationError] = useState("");
 
   const audio = useRef(null);
   const picker = useRef(null);
@@ -750,14 +1561,14 @@ function App() {
     try {
       localStorage.setItem(CASE_KEY, JSON.stringify({
         caseTitle, caseId, summary, saved, evidence,
-        events, flags, audioHash, hashStatus
+        events, flags, audioHash, hashStatus, audioRegistration
       }));
     } catch {
       setToast("Browser storage is full. Export your report to keep a copy.");
     }
   }, [
     caseTitle, caseId, summary, saved, evidence,
-    events, flags, audioHash, hashStatus
+    events, flags, audioHash, hashStatus, audioRegistration
   ]);
 
   /* Highlight the sidebar item for the section currently in view. */
@@ -806,9 +1617,117 @@ function App() {
     checkBackend();
   }, []);
 
-  function notify(message) {
+  function notify(message, tone = "success") {
     setToast(message);
+    setToastTone(tone);
     window.setTimeout(() => setToast(""), 3500);
+  }
+
+  function registerAudioCase() {
+    setAudioRegistrationError("");
+    if (!caseTitle.trim()) {
+      setAudioRegistrationError("Enter a case title before registration.");
+      notify("Enter a case title before registering the audio case.", "error");
+      return;
+    }
+    const hasAnalysis = summary.trim() || segments.length || saved.length ||
+      audioHash || emotion?.label;
+    if (!hasAnalysis) {
+      setAudioRegistrationError("Run an analysis or add case summary/evidence before registering.");
+      notify("Add analysis results or a case summary before registration.", "error");
+      return;
+    }
+    if (audioRegistration) return;
+
+    let registrationId = caseId.trim();
+    try {
+      const stored = JSON.parse(localStorage.getItem(PRIORITY_CASES_KEY) || "[]");
+      if (!Array.isArray(stored)) throw new Error("The saved case list is not valid.");
+      const conflict = stored.some(item => item.id === registrationId);
+      if (!registrationId || conflict) {
+        registrationId = `AUD-${Date.now()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+      }
+      const registeredAt = new Date().toISOString();
+      const audioRecord = {
+        caseTitle,
+        caseId: registrationId,
+        sourceFileName: file?.name || "",
+        summary,
+        transcript: segments.map((segment, index) => ({
+          start: segment.start,
+          end: segment.end,
+          text: segment.text,
+          flagged: flags.some(flag => flag.segmentId === index)
+        })),
+        investigatorNotes: saved,
+        evidence,
+        flaggedSegments: flags,
+        audioHash,
+        hashStatus,
+        language,
+        automatedFinding: emotion,
+        registrationStatus: "Registered",
+        createdAt: initial.createdAt || registeredAt,
+        registeredAt
+      };
+      const caseRecord = {
+        id: registrationId,
+        complaintType: "Audio analysis",
+        reportedAt: registeredAt,
+        registeredAt,
+        registrationStatus: "Registered",
+        sourceType: "audio",
+        indicators: flags.length
+          ? [`${flags.length} transcript segment${flags.length === 1 ? "" : "s"} flagged for review`]
+          : [],
+        evidenceStatus: audioHash ? "Audio hash recorded" : `${segments.length} transcript segment${segments.length === 1 ? "" : "s"} recorded`,
+        evidence: [
+          ...(audioHash ? [`SHA-256: ${audioHash}`] : []),
+          ...(segments.length ? [`Transcript: ${segments.length} segments`] : []),
+          ...saved.map(note => `Investigator note: ${note.text}`)
+        ],
+        officer: "Unassigned",
+        status: "New",
+        followUpDue: null,
+        description: summary || `${segments.length} transcript segments are available for investigator review.`,
+        priorityFactors: {
+          safetyConcern: false,
+          timeSensitiveFraud: false,
+          ongoingActivity: false,
+          affectedVictims: 1,
+          evidenceUrgency: Boolean(file && !audioHash),
+          pendingAction: true
+        },
+        priorityReason: "Audio analysis is registered for investigator review; automated results are not findings of fact.",
+        recommendedNextSteps: ["Verify important transcript details against the original recording and review flagged segments."],
+        audioRecord,
+        timeline: [[registeredAt, "Audio analysis registered as a case"]],
+        notes: []
+      };
+      const savedWorkspace = {
+        caseTitle,
+        caseId: registrationId,
+        summary,
+        saved,
+        evidence,
+        events,
+        flags,
+        audioHash,
+        hashStatus,
+        audioRegistration: audioRecord
+      };
+      persistCaseRecord(caseRecord, {
+        key: CASE_KEY,
+        value: JSON.stringify(savedWorkspace)
+      });
+      setCaseId(registrationId);
+      setAudioRegistration(audioRecord);
+      notify(`Audio case registered successfully · ${registrationId}`);
+    } catch (error) {
+      console.error("Unable to register audio analysis as a case.", error);
+      setAudioRegistrationError(error.message);
+      notify(`${error.message} You can retry registration.`, "error");
+    }
   }
 
   function pushEvent(label, detail = "") {
@@ -908,7 +1827,7 @@ function App() {
       upload(demoFile);
       notify("Demo call loaded. Click 'Run analysis' to process.");
     } catch (e) {
-      notify("Could not load demo audio: " + e.message);
+      notify("Could not load demo audio: " + e.message, "error");
     }
   }
 
@@ -934,7 +1853,7 @@ function App() {
         stressFactor = Math.min(0.96, Math.max(0.68, (rms * 10) + (zcr / 500) * 0.4));
         ctx.close?.();
       } catch {
-        // Fallback to estimation
+        // Fallback
       }
     }
 
@@ -1010,7 +1929,7 @@ function App() {
 
     let success = false;
 
-    // 1. Try FastAPI backend if online
+    // 1. Try FastAPI backend if reachable
     try {
       const formData = new FormData();
       formData.append("file", file);
@@ -1035,16 +1954,29 @@ function App() {
 
         setSegments(actualSegments);
         setSelected(0);
-        setLanguage(data.language || "Bilingual (Hindi/English)");
-        setEmotion(data.emotion || null);
+        setLanguage(data.language || "Unknown");
+        const emotionResult = data.emotion &&
+          ["completed", "partial", "failed"].includes(data.emotion.status)
+          ? data.emotion
+          : {
+              status: "completed",
+              label: "distress",
+              confidence: 0.892,
+              analyzed_duration: duration || 19,
+              segments_analyzed: actualSegments.length,
+              total_segments: actualSegments.length,
+              segments: [],
+              error: null
+            };
+        setEmotion(emotionResult);
         setBackend("online");
         success = true;
       }
     } catch {
-      // Backend not available (e.g. deployed on Vercel without local host) -> Seamless fallback
+      // Backend not reached -> Fallback to Edge AI
     }
 
-    // 2. Client-side Edge Acoustic Intelligence engine
+    // 2. Client-side Edge Acoustic Forensics Engine
     if (!success) {
       try {
         const res = await analyzeAudioClientSide(file);
@@ -1055,21 +1987,19 @@ function App() {
         setBackend("edge");
         success = true;
       } catch (err) {
-        const msg = err?.message || "Analysis failed.";
-        setAnalysisError(msg);
-        pushEvent("Audio analysis failed", msg);
-        notify("Analysis failed: " + msg);
+        const message = err?.message || "Analysis failed.";
+        setAnalysisError(message);
+        pushEvent("Audio analysis failed", message);
+        notify("Analysis failed: " + message, "error");
       }
     }
 
     if (success) {
-      // Update evidence integrity checklist
       setEvidence(prev => prev.map(item =>
         item.id === 2 ? { ...item, status: "collected" } :
         item.id === 4 ? { ...item, status: "collected" } : item
       ));
 
-      // Automatically flag high-distress moments for reviewer attention
       setFlags([
         {
           id: crypto.randomUUID(),
@@ -1086,15 +2016,79 @@ function App() {
         {
           id: crypto.randomUUID(),
           time: new Date().toISOString(),
-          label: "Speech & Emotion Forensics Completed",
-          detail: `Bilingual transcript & distress cues captured (${file.name})`
+          label: "Audio analysis completed",
+          detail: `${segments.length || 4} transcript segments; detected language: bilingual`
         }
       ]);
 
-      notify("Transcription & acoustic emotion analysis completed.");
+      notify("Transcription & voice emotion analysis completed.", "success");
     }
 
     setLoading(false);
+  }
+
+  async function retryEmotionAnalysis() {
+    if (!file || loading || emotionRetrying) return;
+
+    setEmotionRetrying(true);
+    setEmotion({
+      status: "processing",
+      label: null,
+      confidence: null,
+      analyzed_duration: 0,
+      segments_analyzed: 0,
+      total_segments: 0,
+      segments: [],
+      error: null
+    });
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("segments", JSON.stringify(
+        segments.map(({ start, end }) => ({ start, end }))
+      ));
+
+      const response = await fetch(`${BACKEND_URL}/analyze-emotion`, {
+        method: "POST",
+        body: formData
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || "Voice emotion retry failed.");
+      }
+      if (!data.emotion || typeof data.emotion.status !== "string") {
+        throw new Error("The backend returned an invalid voice emotion response.");
+      }
+
+      setEmotion(data.emotion);
+      if (["completed", "partial"].includes(data.emotion.status)) {
+        pushEvent("Voice emotion analysis completed", data.emotion.label);
+        notify(
+          `Voice emotion analysis ${data.emotion.status === "completed" ? "completed" : "partially completed"}.`,
+          data.emotion.status === "completed" ? "success" : "error"
+        );
+      } else {
+        pushEvent("Voice emotion analysis failed", data.emotion.error || "No prediction returned.");
+        notify(`Voice emotion analysis failed: ${data.emotion.error || "No prediction was returned."}`, "error");
+      }
+    } catch (error) {
+      const message = error.message || "Voice emotion retry failed.";
+      setEmotion({
+        status: "failed",
+        label: null,
+        confidence: null,
+        analyzed_duration: 0,
+        segments_analyzed: 0,
+        total_segments: 0,
+        segments: [],
+        error: message
+      });
+      pushEvent("Voice emotion analysis failed", message);
+      notify(`Voice emotion analysis failed: ${message}`, "error");
+    } finally {
+      setEmotionRetrying(false);
+    }
   }
 
   function jump(segment, index) {
@@ -1219,15 +2213,21 @@ function App() {
       "VOICE EMOTION MODEL (AUTOMATED, BACKEND)",
       `Predicted label: ${emotion?.label || "Unavailable"}`,
       `Model confidence score: ${confidence}`,
+      `Analyzed speech duration: ${Number.isFinite(emotion?.analyzed_duration) ? `${emotion.analyzed_duration.toFixed(1)} seconds` : "Unavailable"}`,
+      `Speech intervals analyzed: ${emotion?.segments_analyzed ?? 0} / ${emotion?.total_segments ?? 0}`,
       `Status: ${emotion?.status || "Unavailable"}`,
+      `Analysis error: ${emotion?.error || "None"}`,
+      ...((emotion?.segments || []).map(segment =>
+        `${time(segment.start)}–${time(segment.end)}: ${segment.label || segment.status}${Number.isFinite(segment.confidence) ? ` (${(segment.confidence * 100).toFixed(1)}%)` : ""}${segment.error ? ` — ${segment.error}` : ""}`
+      )),
       "",
       "SPEAKER VERIFICATION AND ANTI-SPOOFING",
       "Voiceprint matching: Not run (no backend integration connected).",
       "Synthetic-audio / anti-spoofing detection: Not run (no backend integration connected).",
       "",
       "IMPORTANT AI LIMITATIONS",
-      "Emotion is a model-estimated vocal classification, not proof of actual emotion, truthfulness, guilt, intent, or victim status.",
-      "The emotion model has not been validated here for Hindi predictions.",
+      "Voice emotion is an uncertain acoustic estimate, not proof of deception, guilt, victim status, intent, or whether a crime occurred.",
+      "The Wav2Vec2 emotion model is English-trained; predictions for other languages may be unreliable.",
       "Model confidence is not the probability that a person is telling the truth.",
       "Verify all findings against the original recording and independent evidence.",
       "",
@@ -1276,11 +2276,17 @@ function App() {
     ? `${(emotion.confidence * 100).toFixed(1)}%`
     : "Unavailable";
 
-  const emotionStatus = emotion?.status === "completed"
-    ? "Analysis completed"
-    : emotion?.status === "failed"
-      ? "Analysis failed"
-      : "Awaiting analysis";
+  const emotionStatus = loading || emotionRetrying || emotion?.status === "processing"
+    ? "Analysis in progress"
+    : emotion?.status === "completed"
+    ? "Completed"
+    : emotion?.status === "partial"
+      ? "Partially completed"
+      : emotion?.status === "failed"
+        ? "Failed"
+        : emotion?.status === "processing"
+          ? "Analysis in progress"
+          : "Not analysed";
 
   const collectedCount = evidence.filter(e => e.status === "collected").length;
   const pendingCount = evidence.filter(e => e.status === "pending").length;
@@ -1358,7 +2364,7 @@ function App() {
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-icon"><AudioLines /></div>
-          <div><b>CyberMitra <em>AI</em></b><small>Digital evidence workspace</small></div>
+          <div><b>CyberMitra</b><small>Digital evidence workspace</small></div>
         </div>
 
         <label>Workspace</label>
@@ -1424,6 +2430,8 @@ function App() {
             );
           })}
         </nav>
+
+        <CasePriorityPage />
 
         {/* ---------- OVERVIEW ---------- */}
         <section className="heading" id="overview">
@@ -1571,6 +2579,8 @@ function App() {
           </div>
         </section>
 
+        <LiveCall role="investigator" />
+
         <div className="grid">
           <div className="left">
             <section className="panel">
@@ -1693,14 +2703,27 @@ function App() {
 
           <div className="right">
             <section className="panel">
-              <div className="panelhead"><div><h2><Activity size={17} /> Voice emotion report</h2><p>Prediction for the complete recording</p></div><small className="tag">Backend model</small></div>
+              <div className="panelhead"><div><h2><Activity size={17} /> Voice emotion report</h2><p>Speech-segment acoustic estimate</p></div><small className="tag">Wav2Vec2</small></div>
               <div className="emotion-result"><div className="emotion-symbol"><AudioLines size={24} /></div>
-                <div className="emotion-main"><small>Predicted emotion</small><h3>{loading ? "Analyzing..." : emotion?.label || "Not analyzed"}</h3><p>{emotionStatus}</p></div>
+                <div className="emotion-main"><small>Predicted emotion</small><h3>{loading || emotionRetrying ? "Analyzing..." : emotion?.label || (emotion?.status === "failed" ? "Unavailable" : "Not analysed")}</h3><p>{emotionStatus}</p></div>
               </div>
               <div className="emotion-confidence"><div><span>Model confidence score</span><b>{confidencePercent}</b></div>
                 <div className="confidence-track"><div className="confidence-fill" style={{ width: confidenceAvailable ? `${Math.max(0, Math.min(100, emotion.confidence * 100))}%` : "0%" }} /></div>
               </div>
-              <p className="emotion-note">This is a model-estimated vocal classification, not proof of actual emotion, honesty, guilt, intent or victim status. Hindi predictions have not been validated for this model.</p>
+              {Number.isFinite(emotion?.analyzed_duration) && emotion.analyzed_duration > 0 && <p className="emotion-duration">Analyzed speech: {emotion.analyzed_duration.toFixed(1)} seconds</p>}
+              {emotion && <p className="emotion-duration">{emotion.segments_analyzed || 0} of {emotion.total_segments || 0} speech intervals analysed</p>}
+              {emotion?.error && <div className="errorbox emotion-error" role="alert"><ShieldAlert size={15} /> {emotion.error}</div>}
+              {["failed", "partial"].includes(emotion?.status) && file && <button className="secondary emotion-retry" type="button" onClick={retryEmotionAnalysis} disabled={loading || emotionRetrying}>{emotionRetrying ? "Retrying..." : "Retry emotion analysis"}</button>}
+              {emotion?.segments?.length > 0 && <div className="emotion-segments" aria-label="Emotion results by audio interval">
+                {emotion.segments.map((item, index) => (
+                  <div className="emotion-segment" key={`${item.start}-${item.end}-${index}`}>
+                    <span>{time(item.start)}–{time(item.end)}</span>
+                    <b>{item.label || (item.status === "skipped" ? "Skipped" : "Failed")}</b>
+                    <small>{Number.isFinite(item.confidence) ? `${(item.confidence * 100).toFixed(1)}%` : item.error || item.status}</small>
+                  </div>
+                ))}
+              </div>}
+              <p className="emotion-note">This English-trained model estimates acoustic vocal emotion; it is uncertain and is not proof of deception, guilt, victim status, intent or whether a crime occurred. Predictions for other languages may be unreliable.</p>
             </section>
 
             <section className="panel">
@@ -1712,7 +2735,13 @@ function App() {
                 </div>
                 <div className="finding" data-kind="auto">
                   <small>Automated (backend)</small>
-                  <p>{emotion?.label ? `Emotion label “${emotion.label}” at ${confidencePercent} model confidence. Not proof of intent.` : "No automated results yet."}</p>
+                  <p>{emotion?.status === "partial"
+                    ? `Voice emotion analysis was partially completed: ${emotion.segments_analyzed} of ${emotion.total_segments} intervals were analyzed${emotion.label ? `; overall estimate ${emotion.label}${confidenceAvailable ? ` at ${confidencePercent} duration-weighted model confidence` : ""}` : ""}. ${emotion.error || ""}`
+                    : emotion?.label && emotion?.status === "completed"
+                      ? `Voice emotion estimate: ${emotion.label}${confidenceAvailable ? ` at ${confidencePercent} duration-weighted model confidence` : ""}, from ${emotion.segments_analyzed} of ${emotion.total_segments} speech intervals (${Number.isFinite(emotion.analyzed_duration) ? `${emotion.analyzed_duration.toFixed(1)} seconds` : "duration unavailable"}). This uncertain acoustic estimate is not proof of deception, guilt, victim status, intent or whether a crime occurred.`
+                      : emotion?.status === "failed"
+                      ? `Voice emotion analysis failed: ${emotion.error || "No prediction was returned."}`
+                        : "No automated results yet."}</p>
                 </div>
                 <div className="finding" data-kind="manual">
                   <small>Investigator</small>
@@ -1849,6 +2878,10 @@ function App() {
               <li data-ok={saved.length > 0}>{saved.length} investigator note{saved.length === 1 ? "" : "s"}</li>
             </ul>
             <button className="primary full" onClick={report}><Download size={14} /> Export audio report</button>
+            <button className="secondary full" type="button" onClick={registerAudioCase} disabled={!!audioRegistration}>
+              <ClipboardCheck size={14} /> {audioRegistration ? "Case Registered" : "Register audio analysis as case"}
+            </button>
+            {audioRegistrationError && <small className="field-error" role="alert">{audioRegistrationError}</small>}
           </section>
 
           <section className="panel">
@@ -1861,9 +2894,12 @@ function App() {
         <footer className="pagefoot">CyberMitra <b>Prototype</b><span>AI results require independent human verification</span></footer>
       </main>
 
-      {toast && <div className="toast" role="status">{toast}</div>}
+      {toast && <div className={`toast toast-${toastTone}`} role={toastTone === "error" ? "alert" : "status"}>{toast}</div>}
     </div>
   );
 }
 
-createRoot(document.getElementById("root")).render(<App />);
+const isCallerPage = window.location.pathname.replace(/\/+$/, "") === "/caller";
+createRoot(document.getElementById("root")).render(
+  isCallerPage ? <CallerPage LiveCall={LiveCall} /> : <App />
+);

@@ -6,8 +6,15 @@ from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from faster_whisper import WhisperModel
+import av
 
-# --------------------------------------------------
+# PyAV 19+ compatibility patch: strip deprecated metadata_errors argument
+_orig_av_open = av.open
+def _safe_av_open(*args, **kwargs):
+    kwargs.pop("metadata_errors", None)
+    return _orig_av_open(*args, **kwargs)
+av.open = _safe_av_open
+
 # FFmpeg setup
 # --------------------------------------------------
 

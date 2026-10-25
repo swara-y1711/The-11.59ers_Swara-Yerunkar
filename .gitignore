@@ -8,3 +8,6 @@ __pycache__/
 *.safetensors
 models/
 .cache/
+.vercel
+dist/
+

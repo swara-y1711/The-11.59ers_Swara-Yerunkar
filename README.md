@@ -158,3 +158,5 @@ Uploads call audio for end-to-end transcription and emotion telemetry.
 3. **Data Privacy:** Local and edge-friendly inference architecture to safeguard sensitive call audio and caller PII.
 
 
+## 📄 License
+MIT License. Built for ethical cybersecurity investigation and digital evidence triage.

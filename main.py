@@ -26,27 +26,33 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
 from faster_whisper import WhisperModel
 import av
-import shutil
-
-# PyAV 19+ compatibility patch: strip deprecated metadata_errors argument
-_orig_av_open = av.open
-def _safe_av_open(*args, **kwargs):
+_original_av_open = av.open
+def _patched_av_open(*args, **kwargs):
     kwargs.pop("metadata_errors", None)
-    return _orig_av_open(*args, **kwargs)
-av.open = _safe_av_open
-
+    return _original_av_open(*args, **kwargs)
+av.open = _patched_av_open
 import numpy as np
 
 # --------------------------------------------------
 # FFmpeg setup
 # --------------------------------------------------
 
-if not shutil.which("ffmpeg"):
-    winget_packages = Path.home() / "AppData" / "Local" / "Microsoft" / "WinGet" / "Packages"
-    if winget_packages.exists():
-        found = list(winget_packages.glob("**/ffmpeg.exe"))
-        if found:
-            os.environ["PATH"] = str(found[0].parent) + os.pathsep + os.environ.get("PATH", "")
+ffmpeg_path = (
+    Path.home()
+    / "AppData"
+    / "Local"
+    / "Microsoft"
+    / "WinGet"
+    / "Packages"
+    / "Gyan.FFmpeg.Shared_Microsoft.Winget.Source_8wekyb3d8bbwe"
+    / "ffmpeg-9.0.2-full_build-shared"
+    / "bin"
+)
+
+if ffmpeg_path.exists():
+    os.environ["PATH"] = (
+        str(ffmpeg_path) + os.pathsep + os.environ.get("PATH", "")
+    )
 
 # --------------------------------------------------
 # FastAPI setup
@@ -74,6 +80,8 @@ signaling_tickets = {}
 CALL_REQUEST_TIMEOUT_SECONDS = 45
 LIVE_SAMPLE_RATE = 16000
 LIVE_MAX_WINDOW_SECONDS = 15
+LIVE_PCM_CHANNELS = 1
+LIVE_PCM_SAMPLE_WIDTH = 2
 EMOTION_MODEL_ID = "Dpngtm/wav2vec2-emotion-recognition"
 EMOTION_MODEL_REVISION = "033a5751a5bbe5b0b67c2c71e6102c38de35a346"
 EMOTION_SAMPLE_RATE = 16000
@@ -218,14 +226,19 @@ def _predict_emotion_batch(classifier, audio_chunks):
     if len(scores) != len(audio_chunks):
         raise ValueError("Emotion model returned an invalid prediction batch.")
 
-    return [
-        {
+    if len(scores) != len(audio_chunks):
+        raise ValueError("Emotion model returned an invalid prediction batch.")
+
+    predictions = []
+    for chunk_scores in scores:
+        if len(chunk_scores) != len(classifier.labels):
+            raise ValueError("Emotion model returned an invalid class-score vector.")
+        predictions.append({
             classifier.labels[index]: float(score)
             for index, score in enumerate(chunk_scores)
             if index in classifier.labels and math.isfinite(float(score))
-        }
-        for chunk_scores in scores
-    ]
+        })
+    return predictions
 
 
 def _failed_emotion_chunk(start, end, error, status="failed"):
@@ -323,11 +336,6 @@ def _analyze_emotion(audio, segments, filename="recording"):
                 classifier,
                 [chunk for _, _, chunk in batch],
             )
-            for (start, end, chunk), scores in zip(batch, batch_scores):
-                _record_emotion_scores(
-                    results, weighted_scores, start, end, chunk, scores
-                )
-                analyzed_duration += (end - start)
         except Exception as batch_error:
             logger.exception(
                 "Voice emotion batch failed (filename=%s, batch=%s)",
@@ -338,7 +346,7 @@ def _analyze_emotion(audio, segments, filename="recording"):
                 try:
                     scores = _predict_emotion_batch(classifier, [chunk])[0]
                     _record_emotion_scores(
-                        results, weighted_scores, start, end, chunk, scores
+                        results, weighted_scores, start, end, scores
                     )
                     analyzed_duration += (end - start)
                 except Exception as error:
@@ -353,6 +361,22 @@ def _analyze_emotion(audio, segments, filename="recording"):
                         end,
                         error or batch_error,
                     ))
+            continue
+
+        for (start, end, _), scores in zip(batch, batch_scores):
+            try:
+                _record_emotion_scores(
+                    results, weighted_scores, start, end, scores
+                )
+                analyzed_duration += (end - start)
+            except Exception as error:
+                logger.exception(
+                    "Voice emotion prediction invalid (filename=%s, start=%.2f, end=%.2f)",
+                    filename,
+                    start,
+                    end,
+                )
+                results.append(_failed_emotion_chunk(start, end, error))
 
     successful = [item for item in results if item["status"] == "completed"]
     if successful and weighted_scores and analyzed_duration > 0:
@@ -381,7 +405,7 @@ def _analyze_emotion(audio, segments, filename="recording"):
     }
 
 
-def _record_emotion_scores(results, weighted_scores, start, end, chunk, scores):
+def _record_emotion_scores(results, weighted_scores, start, end, scores):
     valid_scores = {
         label: float(score)
         for label, score in scores.items()
@@ -467,6 +491,40 @@ def analyze_emotion_file(temp_path, segments, filename):
 def analyze_audio_file(temp_path, filename, language):
     with analysis_lock:
         return _analyze_audio_file(temp_path, filename, language)
+
+
+def _write_live_pcm_wav(temp_path, pcm_bytes):
+    if not pcm_bytes or len(pcm_bytes) % LIVE_PCM_SAMPLE_WIDTH:
+        raise ValueError("Live PCM must contain complete signed 16-bit samples.")
+
+    pcm_samples = np.frombuffer(pcm_bytes, dtype="<i2")
+    pcm_float = pcm_samples.astype(np.float32) / 32768.0
+    with wave.open(temp_path, "wb") as wav_file:
+        wav_file.setnchannels(LIVE_PCM_CHANNELS)
+        wav_file.setsampwidth(LIVE_PCM_SAMPLE_WIDTH)
+        wav_file.setframerate(LIVE_SAMPLE_RATE)
+        wav_file.writeframes(pcm_bytes)
+
+    with wave.open(temp_path, "rb") as wav_file:
+        wav_metadata = {
+            "channels": wav_file.getnchannels(),
+            "sample_width": wav_file.getsampwidth(),
+            "sample_rate": wav_file.getframerate(),
+            "frames": wav_file.getnframes(),
+        }
+    if (
+        wav_metadata["channels"] != LIVE_PCM_CHANNELS
+        or wav_metadata["sample_width"] != LIVE_PCM_SAMPLE_WIDTH
+        or wav_metadata["sample_rate"] != LIVE_SAMPLE_RATE
+        or wav_metadata["frames"] != pcm_samples.size
+    ):
+        raise ValueError("Live PCM did not round-trip to the expected WAV format.")
+
+    return {
+        **wav_metadata,
+        "peak": int(np.max(np.abs(pcm_samples))) if pcm_samples.size else 0,
+        "rms": float(np.sqrt(np.mean(np.square(pcm_float)))) if pcm_float.size else 0.0,
+    }
 
 
 # --------------------------------------------------
@@ -1105,17 +1163,28 @@ async def live_audio_socket(websocket: WebSocket, room: str):
                 })
                 continue
 
-            window_duration = len(pcm_bytes) / (LIVE_SAMPLE_RATE * 2)
+            window_duration = len(pcm_bytes) / (
+                LIVE_SAMPLE_RATE * LIVE_PCM_CHANNELS * LIVE_PCM_SAMPLE_WIDTH
+            )
             temp_path = None
             try:
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
                     temp_path = temp_file.name
 
-                with wave.open(temp_path, "wb") as wav_file:
-                    wav_file.setnchannels(1)
-                    wav_file.setsampwidth(2)
-                    wav_file.setframerate(LIVE_SAMPLE_RATE)
-                    wav_file.writeframes(pcm_bytes)
+                wav_metadata = _write_live_pcm_wav(temp_path, pcm_bytes)
+                logger.info(
+                    "Live caller PCM received (room=%s window_start=%.2f duration=%.2f "
+                    "samples=%s sample_rate=%s channels=%s encoding=pcm_s16le "
+                    "peak=%s rms=%.5f)",
+                    room,
+                    window_start,
+                    window_duration,
+                    wav_metadata["frames"],
+                    wav_metadata["sample_rate"],
+                    wav_metadata["channels"],
+                    wav_metadata["peak"],
+                    wav_metadata["rms"],
+                )
 
                 analysis = await run_in_threadpool(
                     analyze_audio_file,
@@ -1124,11 +1193,21 @@ async def live_audio_socket(websocket: WebSocket, room: str):
                     "auto",
                 )
                 logger.info(
-                    "Live audio analyzed (room=%s window_start=%.2f duration=%.2f segments=%s)",
+                    "Live audio analysis result (room=%s window_start=%.2f "
+                    "transcript_segments=%s emotion_status=%s emotion_intervals=%s)",
                     room,
                     window_start,
-                    window_duration,
                     len(analysis["segments"]),
+                    analysis["emotion"].get("status"),
+                    [
+                        {
+                            "start": item["start"],
+                            "end": item["end"],
+                            "status": item["status"],
+                            "error": item["error"],
+                        }
+                        for item in analysis["emotion"].get("segments", [])
+                    ],
                 )
                 await websocket.send_json({
                     "type": "analysis",

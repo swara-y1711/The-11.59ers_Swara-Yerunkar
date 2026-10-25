@@ -397,9 +397,15 @@ export default function CasePriorityPage() {
                   <td>{item.evidenceStatus}</td>
                   <td>{item.officer}</td>
                   <td><span className="priority-status">{item.status}</span></td>
-                  <td><PriorityBadge level={priority} /><small>{item.reviewPriorityScore !== undefined
-                    ? `${item.reviewPriorityScore} points · ${item.reviewPriorityLevel}`
-                    : `${assessment.score} triage points · ${priority} priority`}</small>{item.priorityOverride && <small className="priority-overridden">Overridden</small>}</td>
+                  <td>
+                    <div className="priority-cell-level">
+                      <PriorityBadge level={priority} />
+                      <small>{item.reviewPriorityScore !== undefined
+                        ? `${item.reviewPriorityScore} pts · ${item.reviewPriorityLevel}`
+                        : `${assessment.score} triage pts · ${priority}`}</small>
+                      {item.priorityOverride && <small className="priority-overridden">Overridden</small>}
+                    </div>
+                  </td>
                   <td className="priority-explanation">{item.priorityOverride ? `Officer override: ${item.priorityOverride.reason}` : item.priorityReason || assessment.reasons[0]}</td>
                   <td><button className="priority-view" type="button" onClick={() => setSelectedId(item.id)}>View details <ChevronRight size={13} /></button></td>
                 </tr>;

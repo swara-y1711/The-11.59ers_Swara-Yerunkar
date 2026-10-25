@@ -8,3 +8,6 @@ __pycache__/
 *.safetensors
 models/
 .cache/
+
+dist/
+.pytest_cache/
